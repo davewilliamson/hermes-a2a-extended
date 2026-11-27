@@ -1,0 +1,6 @@
+name: a2a-extended
+version: 0.1.0
+kind: general
+provides_tools:
+  - a2a_extended_send
+description: Bounded A2A v1.0 streaming sends to configured peers.
