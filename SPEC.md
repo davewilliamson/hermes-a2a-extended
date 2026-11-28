@@ -1,5 +1,7 @@
 # Specification: `a2a_extended_send` streaming A2A client plugin
 
+The separate [async v2 contract](#async-v2-contract) is below.
+
 A stdlib-only Hermes "general" plugin that registers one tool, `a2a_extended_send`, in the `a2a`
 toolset. It sends a task to a configured A2A peer over the **streaming** (SSE) path and returns
 (a) retrospective `SUBMITTED`→`WORKING` timestamps plus `task_id`/`context_id`, and (b) a bounded
@@ -164,3 +166,62 @@ Loader check (if a `hermes` binary is available in the environment): `ctx.regist
   bundled-plugin internals (`plugins.platforms.a2a.*`). `hermes plugins validate` warns on any
   other Hermes import.
 - MIT license. Targets A2A `1.0`.
+
+## Async v2 contract
+
+`a2a-async` is a separate platform and client toolset, not a streaming-v1 fallback.
+Use mTLS and `Authorization: Bearer ...` for discovery and all RPCs. Certificate
+SHA-256 fingerprints and distinct directional bearer files jointly bind identity.
+Request fields do not select the principal, route profile, or scope. The configured
+HTTPS origin is the only outbound destination; the client never follows redirects.
+
+Methods are JSON-RPC 2.0 `POST /`. The agent card advertises
+`urn:hermes:a2a-async:tasks-send:v1`, no streaming, and no push. The extension accepts
+`tasks/send` with `{"messageId":"caller-id", "message":"text"}` and returns
+`{task_id, context_id, received_at}`. Each new task gets an isolated, server-issued
+context; caller-supplied send contexts are refused. `tasks/get`, `tasks/cancel`, and
+terminal `tasks/subscribe` accept `id`. Subscribe returns a single JSON snapshot;
+poll nonterminal tasks instead. `tasks/list` is principal-scoped and filters by
+`contextId` and/or `messageId`. Use `includeArtifacts: true` to retrieve the reply
+and its single artifact. Lists page by nonnegative `offset` and return `nextOffset`
+when more records remain (up to 32 records, or one when including artifacts).
+
+The server commits receipt metadata to profile-local SQLite before acknowledging.
+During a server generation one in-memory task owns the transition from `SUBMITTED`
+to `WORKING` and once-only terminal settlement. `WORKING` means dispatch started,
+not that the model has issued any tool call. The final notify send or processing
+completion hook publishes the terminal state. Non-final sends cannot complete work.
+The streamed-final field is a defensive compatibility fallback, not a streaming mode.
+
+Timeout is an observation deadline, not a guarantee that a running side effect
+stopped. The execution slot remains occupied until processing completes. Canceling
+queued work prevents dispatch; running work is marked `CANCEL_REQUESTED` without
+interruption. A late reply cannot replace a recorded terminal state. Defaults:
+64 KiB request bound, 2 s socket idle timeout, 16 HTTP workers, 16 queued and 4 active
+tasks, 120 s deadline from receipt, 64 terminal records and 2048 returned characters.
+
+Disconnects do not cancel work. A duplicate `(principal, messageId)` with unchanged
+payload returns the original receipt. The client journals identifiers and a digest
+before sending, retries one transport failure with the same `messageId`, and can
+recover the receipt using status by `submission_id`. Neither journal stores message
+or reply bodies. Use a new explicit ID for intentionally repeated text. Restart and
+eviction make prior task IDs unknown and end the server's idempotency guarantee;
+do not retry blindly across either boundary. Old receipts are not automatically replayed.
+
+Before enabling, require operator approval for each machine. The owning profile
+must use `smart` or `manual`, the `builtin` approval transport, and launch without
+`HERMES_YOLO_MODE`. Policy is checked on connect, admission and dispatch. Cross-profile
+routes are refused and framed events have `allow_gateway_control=False`. The synchronous
+deny hook resolves queued approvals in active inbound DM contexts before the notifier;
+the transport discards approval and interim sends. This is defense in depth, not a
+replacement for the trusted-peer boundary. Redaction covers recognized bearer strings
+and configured token values; it is not general data-loss prevention. Audit messages
+omit principals, addresses, IDs and content.
+
+### Verification
+
+Run the full test suite with Python 3.11 and Hermes source at
+`8fc0374447313e276f6b9a2764bfc750190c966a` on `PYTHONPATH`. Set
+`HERMES_DISABLE_LAZY_INSTALLS=1` and use a disposable `HERMES_HOME`. Without the
+Hermes checkout, only the v1 suite runs. Test certificates are generated in pytest's
+disposable directory, never in the repository.
