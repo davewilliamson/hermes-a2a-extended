@@ -67,7 +67,8 @@ reply window regardless of worker progress. So:
 │   ├── __init__.py         #   registers a2a_extended_dispatch / a2a_extended_status
 │   ├── adapter.py          #   platform life-cycle, gate(), config loading
 │   ├── wire.py             #   mTLS JSON-RPC server (tasks/send|get|list|cancel|subscribe)
-│   └── journal.py          #   receipt / idempotency journal (SQLite)
+│   ├── journal.py          #   receipt / idempotency journal (SQLite)
+│   └── README.md           #   plugin README + security disclosure (Marketplace)
 ├── scripts/gen_certs.py    #   generate short-lived loopback test certificates
 ├── tests/                  #   72 tests: unit + integration against a mock A2A server
 ├── docs/                   #   install, configuration, architecture, security, testing, troubleshooting
