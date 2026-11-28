@@ -193,6 +193,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _drain_request_body(self):
+        # Rejecting a request without consuming its body closes the socket with
+        # unread bytes in the receive buffer; the kernel turns that into a TCP
+        # RST that races the error response to the client (most visible on
+        # Linux, where the client sees ECONNRESET instead of the 401/404/413).
+        # Drain a bounded prefix so the response is delivered cleanly; a body
+        # beyond the cap keeps its DoS protection and simply resets.
+        lengths = self.headers.get_all("Content-Length", [])
+        size = int(lengths[0]) if len(lengths) == 1 and re.fullmatch(r"[0-9]{1,9}", lengths[0]) else MAX_BODY
+        remaining = min(size, MAX_BODY * 4)
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, MAX_BODY))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+
     def do_GET(self):
         if self.path != "/.well-known/agent-card.json":
             return self.respond(404, {"error": "not found"})
@@ -202,19 +218,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path != "/":
+            self._drain_request_body()
             return self.respond(404, {"error": "not found"})
         principal = authenticate(self.connection, self.headers, self.server.peers)
         if principal is None:
+            self._drain_request_body()
             return self.respond(401, {"error": "unauthorized"})
         response = {"jsonrpc": "2.0", "id": None}
         status = 200
         try:
             lengths = self.headers.get_all("Content-Length", [])
             if self.headers.get("Transfer-Encoding") is not None or len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,9}", lengths[0]):
+                self._drain_request_body()
                 raise Refusal("invalid content length", -32600)
             size = int(lengths[0])
             if size > MAX_BODY:
                 status = 413
+                self._drain_request_body()
                 raise Refusal("body too large", -32600)
             try:
                 req = json.loads(self.rfile.read(size))
