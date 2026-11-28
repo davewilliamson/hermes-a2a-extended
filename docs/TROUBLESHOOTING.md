@@ -44,6 +44,32 @@ A loaded plugin module is cached for the gateway's lifetime. Restart the gateway
 `systemctl --user restart hermes-gateway.service` on Linux) — the gateway cannot restart itself
 from inside its own session.
 
+## `ssl.SSLCertVerificationError: ... Missing Authority Key Identifier`
+
+**Cause.** Strict OpenSSL 3 verification on Linux rejects certificates with missing X.509v3
+extensions, even if the same certificates pass on macOS. This error points to a missing leaf AKI;
+also check SKI and basic constraints on the CA and leaves.
+
+**Fix.** Regenerate the certificate chain with the extensions in [Installation §2b](INSTALL.md#2b-v2--generate-certificates-and-configure-the-listener).
+`scripts/gen_certs.py` emits them for loopback test certificates.
+
+## Plugin copied but its tool never appears
+
+**Cause.** User plugins are opt-in. The gateway skips unlisted plugins and logs
+`not enabled in config`.
+
+**Fix.** Add the plugin to `plugins.enabled` in the owning profile's `config.yaml` and restart
+that profile's gateway.
+
+## `PermissionError [Errno 13]` or `PID file race lost to another gateway instance. Exiting.`
+
+**Cause.** On a headless systemd host, `HERMES_HOME` (normally `~/.hermes`) may be owned by the
+wrong user, or stale `gateway.sock`, `gateway.pid`, or `gateway.lock` files may remain.
+
+**Fix.** Stop the gateway service and confirm no instance is using that profile. Use `chown` to
+correct ownership of the profile's `HERMES_HOME` and any affected files to the gateway service
+user. Remove only confirmed stale single-instance files, then restart the service.
+
 ## Connect timeline (is it even reaching the server?)
 
 - `Adapter.connect()` → `gate()` → `load_config_readonly()` → `Server.__init__` (TLS context +

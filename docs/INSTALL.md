@@ -25,6 +25,15 @@ cp -R a2a-async     "$PROFILE_HOME/plugins/"       # v2 only, if approved
 
 No `pip install` is involved: plugins are loaded from source by the gateway.
 
+User plugins are opt-in. Add the plugins you installed to `plugins.enabled` in the owning
+profile's `config.yaml`, preserving any existing entries. Without this, the gateway skips them
+without surfacing an error in the session.
+
+```yaml
+plugins:
+  enabled: [a2a-extended, a2a-async]  # omit a2a-async if not installed
+```
+
 ## 2a. v1 — configure the streaming client
 
 v1 uses the standard Hermes `a2a_agents` map. No secret lives in this repo.
@@ -54,6 +63,12 @@ python3 scripts/gen_certs.py
 > These are loopback demo certs with a private CA. At rollout, issue **independent per-peer
 > certificates** from your own CA and **never copy a CA private key between peers**. The
 > `secrets/` directory and `*.crt`/`*.key`/`*.pem`/`*.env` files are git-ignored.
+
+Rollout certificates must carry standard X.509v3 extensions: `basicConstraints` (`CA:TRUE` on
+the CA and `CA:FALSE` on leaves), `subjectKeyIdentifier` on the CA and every leaf, and
+`authorityKeyIdentifier=keyid,issuer` on every leaf. Strict OpenSSL 3 validation can fail with
+`Missing Authority Key Identifier` when a leaf lacks AKI. `scripts/gen_certs.py` emits these
+extensions for the loopback specimens.
 
 Compute the fingerprint of a peer's **client** certificate (lowercase SHA-256 of the DER):
 
@@ -123,6 +138,10 @@ The adapter refuses to start otherwise. See [Configuration](CONFIGURATION.md) fo
 defaults.
 
 ## 3. Restart the gateway
+
+On headless systemd hosts, the gateway often runs as a dedicated user (for example, `hermes`).
+The profile home (`HERMES_HOME`, normally `~/.hermes` for that user) must be owned by the gateway
+user so the plugin can write its receipt journal and listener state files.
 
 Plugins never hot-reload. Restart from a **separate** shell (the gateway cannot restart itself):
 
