@@ -13,10 +13,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install test dep
-        run: pip install --quiet pytest
+      - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: 8fc0374447313e276f6b9a2764bfc750190c966a
+          path: hermes-reference
+          persist-credentials: false
+      - name: Install test dependencies
+        run: python3 -m pip install --quiet pytest ./hermes-reference
       - name: Run tests
-        run: python3 -m pytest tests/ -v
+        env:
+          PYTHONPATH: ${{ github.workspace }}/hermes-reference
+          HERMES_DISABLE_LAZY_INSTALLS: "1"
+        run: |
+          export HERMES_HOME="$(mktemp -d)"
+          python3 -m pytest tests/ -v
 
   secrets:
     runs-on: ubuntu-latest

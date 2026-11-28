@@ -1,0 +1,9 @@
+name: a2a-async
+version: 0.1.0
+kind: platform
+provides_hooks:
+  - pre_approval_request
+provides_tools:
+  - a2a_extended_dispatch
+  - a2a_extended_status
+description: Mutually authenticated asynchronous A2A task admission and status.

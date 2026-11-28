@@ -5,3 +5,8 @@ __pycache__/
 *.log
 .venv/
 venv/
+*.pem
+*.key
+*.crt
+secrets/
+*.env
