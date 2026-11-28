@@ -1,0 +1,64 @@
+# Example Hermes config for a profile that runs BOTH a2a plugins.
+#
+# 1. a2a_agents (top level)          -> v1 streaming client peers (a2a_extended_send)
+# 2. platforms.a2a-async             -> v2 mTLS listener + async outbound peers
+#
+# NOTHING here is a real value. Replace paths, hostnames, fingerprints and token
+# files with your own. Only PATHS are stored below; the secret material lives in
+# the referenced files and is never committed.
+
+# --- v1 streaming client (blocking A2A peer -> bounded streaming) -----------
+a2a_agents:
+  upstream-analyst:
+    url: https://analyst.example.internal
+    auth: {type: bearer, token: "REPLACE-bearer-token-for-analyst-peer"}
+    timeout: 120
+    capabilities: [code, web]
+  report-writer:
+    url: https://writer.example.internal:8443
+    auth: {type: bearer, token: "REPLACE-bearer-token-for-writer-peer"}
+    timeout: 120
+    capabilities: [code]
+
+# --- v2 async transport: required policy gate ------------------------------
+approvals:
+  mode: manual                     # smart or manual; never off/yolo
+security:
+  approval:
+    transport: builtin
+
+# --- v2 async transport: mTLS listener + outbound peers --------------------
+platforms:
+  a2a-async:
+    enabled: true
+    extra:
+      # Listener bind. Advertised origin (agent card) can be set with
+      # public_url when the behind-address differs from host/port.
+      host: 127.0.0.1
+      port: 9443
+      # public_url: https://gateway.example.internal:9443
+
+      # Server identity + the CA that signed our server cert and the peers we admit.
+      ca:   /etc/hermes/tls/ca.crt
+      cert: /etc/hermes/tls/server.crt
+      key:  /etc/hermes/tls/server.key
+
+      # Who may submit work TO us: peer name -> cert fingerprint + token file.
+      # The fingerprint is the lowercase SHA-256 of the peer CLIENT cert (DER).
+      peers:
+        coordinator:
+          sha256:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          token_file: /etc/hermes/tokens/coordinator.inbound.env
+        scheduler:
+          sha256:     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          token_file: /etc/hermes/tokens/scheduler.inbound.env
+
+      # Who THIS profile may dispatch work to (client-only profiles define
+      # outbound and leave enabled: false).
+      outbound:
+        coordinator:
+          url:        https://coordinator.example.internal:9443
+          ca:         /etc/hermes/tls/coordinator-ca.crt
+          cert:       /etc/hermes/tls/client.crt
+          key:        /etc/hermes/tls/client.key
+          token_file: /etc/hermes/tokens/coordinator.outbound.env
