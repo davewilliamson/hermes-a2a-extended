@@ -9,25 +9,38 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - uses: actions/checkout@v4
+      - name: Checkout plugin repo
+        uses: actions/checkout@v4
+
+      - name: Checkout hermes-agent (pinned)
+        uses: actions/checkout@v4
         with:
           repository: NousResearch/hermes-agent
           ref: 8fc0374447313e276f6b9a2764bfc750190c966a
           path: hermes-reference
           persist-credentials: false
-      - name: Install test dependencies
-        run: python3 -m pip install --quiet pytest ./hermes-reference
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      # hermes-agent can't be pip-installed (its setup.py refuses wheel/sdist
+      # builds) and its dependencies are all gated to `python_version >= '3.14'`,
+      # so sync the pinned checkout's locked runtime deps without building the
+      # project itself, and import gateway/hermes_cli from source via PYTHONPATH.
+      - name: Sync hermes-agent runtime dependencies
+        working-directory: hermes-reference
+        run: uv sync --no-install-project --no-dev
+
+      - name: Install pytest
+        run: uv pip install --python hermes-reference/.venv/bin/python pytest
+
       - name: Run tests
         env:
-          PYTHONPATH: ${{ github.workspace }}/hermes-reference
+          PYTHONPATH: ${{ github.workspace }}/hermes-reference:${{ github.workspace }}
           HERMES_DISABLE_LAZY_INSTALLS: "1"
         run: |
           export HERMES_HOME="$(mktemp -d)"
-          python3 -m pytest tests/ -v
+          hermes-reference/.venv/bin/python -m pytest tests/ -v
 
   secrets:
     runs-on: ubuntu-latest
