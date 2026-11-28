@@ -6,6 +6,7 @@ import http.client
 import json
 import os
 import re
+import _ssl
 import socket
 import ssl
 import stat
@@ -44,14 +45,51 @@ def redact(text, credentials=()):
     return re.sub(r"(?i)\bbearer[ \t]+[A-Za-z0-9._~+/=-]+", "Bearer [redacted]", text)
 
 
+def _raw_ssl_context(protocol):
+    """Return the standard SSLContext, bypassing truststore's monkeypatch.
+
+    The gateway injects truststore, which replaces ``ssl.SSLContext`` with a
+    subclass that verifies peer certificates against the OS trust store. This
+    transport authenticates its own private CA, so OS-store verification is
+    both meaningless here and breaks the server handshake (SSLError during the
+    client-cert check). truststore keeps the original class in
+    ``truststore._ssl_constants._original_SSLContext``; use it when present and
+    actually swapped in, and fall back to the normal class otherwise.
+    """
+    original = None
+    try:
+        from truststore._ssl_constants import _original_SSLContext
+        original = _original_SSLContext
+    except Exception:
+        original = None
+    if original is not None and ssl.SSLContext is not original:
+        return original(protocol)
+    return ssl.SSLContext(protocol)
+
+
+def _set_ctx_attr(ctx, name, value):
+    """Set a C-level SSLContext attribute, bypassing the ssl.py property.
+
+    This bundled Python's ``ssl.SSLContext`` setters for ``verify_mode`` and
+    ``minimum_version`` call ``super(SSLContext, SSLContext)`` using a
+    module-global class name. Once truststore rebinds ``ssl.SSLContext``, that
+    global points at truststore's subclass and the setter recurses. The C
+    descriptor on ``_ssl._SSLContext`` is immune, so write through it directly.
+    """
+    getattr(_ssl._SSLContext, name).__set__(ctx, value)
+
+
 def tls(config, server=False):
     if server:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx = _raw_ssl_context(ssl.PROTOCOL_TLS_SERVER)
+        _set_ctx_attr(ctx, "verify_mode", ssl.CERT_REQUIRED)
         ctx.load_verify_locations(config["ca"])
     else:
-        ctx = ssl.create_default_context(cafile=config["ca"])
-    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx = _raw_ssl_context(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = True
+        _set_ctx_attr(ctx, "verify_mode", ssl.CERT_REQUIRED)
+        ctx.load_verify_locations(config["ca"])
+    _set_ctx_attr(ctx, "minimum_version", ssl.TLSVersion.TLSv1_2)
     ctx.load_cert_chain(config["cert"], config["key"])
     return ctx
 
