@@ -3,6 +3,9 @@ __pycache__/
 .pytest_cache/
 .env
 *.log
+.coverage
+.coverage.*
+htmlcov/
 .venv/
 venv/
 *.pem

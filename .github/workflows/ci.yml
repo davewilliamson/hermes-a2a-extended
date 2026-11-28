@@ -7,7 +7,13 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The inbound transport is timing-sensitive in ways that differ between
+        # Linux and macOS (socket-close/RST semantics), so test on both.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout plugin repo
         uses: actions/checkout@v4
@@ -31,16 +37,22 @@ jobs:
         working-directory: hermes-reference
         run: uv sync --no-install-project --no-dev
 
-      - name: Install pytest
-        run: uv pip install --python hermes-reference/.venv/bin/python pytest
+      - name: Install pytest and coverage
+        run: uv pip install --python hermes-reference/.venv/bin/python pytest pytest-cov
 
-      - name: Run tests
+      # Coverage is measured on the parent process. The v1 client (a2a-extended)
+      # runs its network worker in a spawned subprocess; that code is exercised by
+      # the integration tests but not visible to coverage's parent-process trace,
+      # so client.py/policy.py under-report. See docs/TESTING.md.
+      - name: Run tests with coverage
         env:
           PYTHONPATH: ${{ github.workspace }}/hermes-reference:${{ github.workspace }}
           HERMES_DISABLE_LAZY_INSTALLS: "1"
         run: |
           export HERMES_HOME="$(mktemp -d)"
-          hermes-reference/.venv/bin/python -m pytest tests/ -v
+          hermes-reference/.venv/bin/python -m pytest tests/ \
+            --cov=a2a-async --cov=a2a-extended \
+            --cov-report=term-missing --cov-fail-under=70 -q
 
   secrets:
     runs-on: ubuntu-latest
