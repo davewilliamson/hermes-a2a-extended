@@ -16,16 +16,25 @@ def generate(output, second_client=False):
 
     mask = os.umask(0o077)
     try:
-        openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "30", "-subj", "/CN=A2A test CA",
-                "-keyout", "ca.key", "-out", "ca.crt")
-        certificates = [("server", "extendedKeyUsage=serverAuth\nsubjectAltName=IP:127.0.0.1,DNS:localhost\n"),
-                        ("client", "extendedKeyUsage=clientAuth\n")]
+        openssl("req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=A2A test CA",
+                "-keyout", "ca.key", "-out", "ca.csr")
+        (output / "ca.ext").write_text(
+            "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n"
+            "subjectKeyIdentifier=hash\n", encoding="ascii")
+        openssl("x509", "-req", "-in", "ca.csr", "-signkey", "ca.key", "-days", "30",
+                "-extfile", "ca.ext", "-out", "ca.crt")
+        leaf_extensions = ("basicConstraints=CA:FALSE\nsubjectKeyIdentifier=hash\n"
+                           "authorityKeyIdentifier=keyid,issuer\n")
+        client_usages = "keyUsage=digitalSignature\nextendedKeyUsage=clientAuth\n"
+        certificates = [("server", "keyUsage=digitalSignature,keyEncipherment\n"
+                                   "extendedKeyUsage=serverAuth\nsubjectAltName=IP:127.0.0.1,DNS:localhost\n"),
+                        ("client", client_usages)]
         if second_client:
-            certificates.append(("client2", "extendedKeyUsage=clientAuth\n"))
+            certificates.append(("client2", client_usages))
         for name, usages in certificates:
             openssl("req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", f"/CN={name}",
                     "-keyout", f"{name}.key", "-out", f"{name}.csr")
-            (output / f"{name}.ext").write_text(usages, encoding="ascii")
+            (output / f"{name}.ext").write_text(leaf_extensions + usages, encoding="ascii")
             openssl("x509", "-req", "-in", f"{name}.csr", "-CA", "ca.crt", "-CAkey", "ca.key", "-CAcreateserial",
                     "-days", "30", "-extfile", f"{name}.ext", "-out", f"{name}.crt")
     finally:
