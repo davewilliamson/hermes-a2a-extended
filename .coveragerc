@@ -1,0 +1,12 @@
+[run]
+branch = True
+source =
+    a2a-async
+    a2a-extended
+omit =
+    tests/*
+    scripts/*
+
+[report]
+show_missing = True
+skip_covered = False

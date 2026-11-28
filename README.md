@@ -1,28 +1,89 @@
 # hermes-a2a-extended
 
-A stdlib-only [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that adds a
-bounded, liveness-aware streaming A2A client tool.
+Two stdlib-only [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugins that add a
+**bounded transport** for agent-to-agent (A2A) work on top of the
+[A2A protocol (v1.0)](https://a2a-protocol.org), with mutually-authenticated TLS and an
+origin-trust security model:
 
-## What it does
+| Plugin | Kind | What it provides |
+|--------|------|------------------|
+| [`a2a-extended/`](a2a-extended/) | general | `a2a_extended_send` — a **streaming, liveness-aware A2A client** with a bounded early return |
+| [`a2a-async/`](a2a-async/) | platform + client | an **mTLS JSON-RPC listener** plus `a2a_extended_dispatch` / `a2a_extended_status` for admitting and polling async tasks |
 
-`a2a_extended_send` sends a task to a configured A2A peer over the **streaming** path
-(`SendStreamingMessage` / SSE) rather than the blocking `SendMessage` path. It returns:
+They are intentionally independent: `a2a-extended` works with any standard A2A peer today;
+`a2a-async` is a hardened trusted-peer transport for a fleet where callers submit work,
+receive a receipt, and poll for the result.
 
-- retrospective dispatch timestamps (`SUBMITTED` → `WORKING`) plus `task_id` / `context_id`;
-- a bounded early return (per-phase deadlines) instead of the ~30-minute blind block that a
-  wedged peer otherwise causes.
+> **`a2a-async` requires operator approval before enabling it on any machine.** See
+> [Security](docs/SECURITY.md) and the install steps below.
 
-## Honest scope
+---
 
-This tool detects **transport death** and bounds **total wall-clock**. It does **not** prove that
-the remote worker actually started or completed — that is unprovable from the public A2A streaming
-surface, where keepalives flow for the full reply window regardless of worker progress.
+## The problem it solves
 
-## Config
+The bundled Hermes A2A tools (`a2a_send` / the non-streaming client) call a peer over the
+**blocking** `SendMessage` path. If the peer wedges, the caller blocks for the peer's full reply
+timeout (~30 minutes) with no signal until the reply arrives or the socket dies.
 
-Peers are read from the standard Hermes `a2a_agents` config map (no values live in this repo):
+`a2a-extended` fixes that with a **streaming** client that treats the transport as the only
+observable truth and returns promptly:
+
+- **Bounded wall-clock** — three strictly-monotonic deadlines (transport-dead, acknowledgement,
+  overall-cap) mean a wedged peer returns in **seconds to ~120 s** instead of blocking for half
+  an hour.
+- **Retrospective dispatch facts** — `SUBMITTED` → `WORKING` timestamps plus `task_id` /
+  `context_id`, so you know *when* the peer acknowledged, even though you can't know *whether*
+  it finished.
+
+`a2a-async` solves the **opposite side** of the same problem: it is a dispatch surface on the
+*server* side. Peers authenticate with client certificates **and** directional bearer tokens,
+submit a task, receive a durable receipt, and poll — without the caller being able to route to a
+different profile, pick scope, or drive the agent as a shell.
+
+### Honest scope
+
+Neither plugin is an *execution oracle*. On the public A2A streaming surface, `WORKING` is set
+after the handler is *scheduled* (not when execution begins), and keepalives flow for the whole
+reply window regardless of worker progress. So:
+
+- `a2a_extended_send` detects **transport death** and bounds **total wall-clock**; it cannot prove
+  the remote worker started or completed.
+- `a2a-async`'s timeout is an **observation deadline**, not a guarantee that a running side effect
+  stopped. A running action may still finish after cancellation or disconnect.
+
+---
+
+## Repository layout
+
+```
+├── a2a-extended/           # v1: streaming/liveness-aware A2A client
+│   ├── plugin.yaml         #   kind=general, toolset=a2a, stdlib-only
+│   ├── __init__.py         #   registers a2a_extended_send
+│   ├── client.py           #   card fetch + interface select + JSON-RPC/SSE (stdlib urllib)
+│   ├── liveness.py         #   per-phase monotonic-deadline state machine (pure)
+│   └── policy.py           #   origin-trust + TLS/redirect rules + credential seam
+├── a2a-async/              # v2: mTLS JSON-RPC platform + async client tools
+│   ├── plugin.yaml         #   kind=platform, hook=pre_approval_request
+│   ├── __init__.py         #   registers a2a_extended_dispatch / a2a_extended_status
+│   ├── adapter.py          #   platform life-cycle, gate(), config loading
+│   ├── wire.py             #   mTLS JSON-RPC server (tasks/send|get|list|cancel|subscribe)
+│   └── journal.py          #   receipt / idempotency journal (SQLite)
+├── scripts/gen_certs.py    #   generate short-lived loopback test certificates
+├── tests/                  #   72 tests: unit + integration against a mock A2A server
+├── docs/                   #   install, configuration, architecture, security, testing, troubleshooting
+├── examples/               #   worked config + AGENTS.md / SOUL.md / USER.md examples
+├── SPEC.md                 #   the canonical wire/behaviour specification
+└── .github/workflows/ci.yml #  test matrix (ubuntu + macOS) + gitleaks
+```
+
+---
+
+## Quick start
+
+### v1 streaming client (drop-in for any A2A peer)
 
 ```yaml
+# ~/.hermes/config.yaml
 a2a_agents:
   some-peer:
     url: https://peer.example
@@ -31,76 +92,65 @@ a2a_agents:
     capabilities: [code]
 ```
 
-## Security model
+Then, in a session, ask the agent to send work to `some-peer`; the `a2a_extended_send` tool is
+used automatically when the toolset is enabled.
 
-- The peer token is read in-memory only (`a2a_agents.<peer>.auth.token`), used to build an
-  `Authorization` header, and forwarded **only** to that peer's configured origin.
-- Requests go through `hermes_cli.urllib_security.open_credentialed_url`, which strips credential
-  headers across cross-origin redirects.
-- Tokens are never logged, persisted, passed to the model, or returned in tool output.
+### v2 mTLS listener (trusted-peer fleet transport)
 
-## Async v2 (separate `a2a-async` plugin)
-
-**REQUIRES DAVE APPROVAL** before enabling either half on any machine. Do not add a
-listener to a live profile just to test this plugin. V1 `a2a_extended_send` is unchanged.
-The async plugin adds `a2a_extended_dispatch` (admission only) and
-`a2a_extended_status` (poll by task, context, or local submission ID). It does not stream.
-
-Deploy `a2a-async/` as a separate plugin directory under the owning profile and enable it
-only on that profile. A client-only profile can define `outbound` without enabling the
-platform listener. Example with loopback and placeholder paths:
+```bash
+python3 scripts/gen_certs.py          # writes loopback CA + server + client certs to secrets/
+```
 
 ```yaml
-approvals:
-  mode: smart
-security:
-  approval:
-    transport: builtin
+# ~/.hermes/config.yaml
+approvals: {mode: smart}
+security: {approval: {transport: builtin}}
 platforms:
   a2a-async:
     enabled: true
     extra:
       host: 127.0.0.1
       port: 9443
-      ca: /path/to/secrets/ca.crt
+      ca:   /path/to/secrets/ca.crt
       cert: /path/to/secrets/server.crt
-      key: /path/to/secrets/server.key
+      key:  /path/to/secrets/server.key
       peers:
         example-peer:
-          sha256: <lowercase SHA-256 of the peer client certificate in DER format>
+          sha256: "<sha256 of the peer's client cert, DER>"
           token_file: /path/to/secrets/inbound.env
       outbound:
         example-peer:
           url: https://localhost:9443
-          ca: /path/to/secrets/peer-ca.crt
+          ca:   /path/to/secrets/ca.crt
           cert: /path/to/secrets/client.crt
-          key: /path/to/secrets/client.key
+          key:  /path/to/secrets/client.key
           token_file: /path/to/secrets/outbound.env
 ```
 
-Keep `HERMES_YOLO_MODE` unset for the entire process lifetime. `manual` is also
-accepted. This is a **trusted-peer** interface: authorized peers can invoke the local
-agent under its normal scope and tool policy. Do not grant credentials to untrusted
-callers. The approval hook denies queued human-required approvals before the notifier;
-it cannot change actions allowed by the operator's existing policy or make approvals
-an isolation boundary. No approval prompt transport is exposed to callers.
+Then restart that profile's gateway. Full steps, rollback, and client-only mode are in
+[Installation](docs/INSTALL.md).
 
-`python3 scripts/gen_certs.py` generates short-lived loopback specimens under the
-ignored `secrets/` directory (requires OpenSSL); establish independent per-peer certs
-and directional opaque URL-safe bearer tokens at rollout. Store only paths in YAML.
-Rotate or revoke a token by atomically replacing or withdrawing its file; cert/CA or
-mapping changes require a restart. Do not copy a demo CA private key between peers.
+---
 
-Disconnects do not cancel admitted work. Submit again with the same `message_id` to
-recover a lost acknowledgement while the server retains the receipt. Intentionally
-repeating identical text requires a new explicit `message_id`. Cancellation stops
-queued dispatch only; a running action may still finish. No peer can choose another
-profile or use the inbound message as a gateway slash command.
+## Documentation
 
-To roll back, disable the `a2a-async` platform and plugin in its owning profile, then
-restart that gateway. Optionally uninstall only `a2a-async`; do not touch v1. Running
-work may already have taken effect. See [SPEC.md](SPEC.md) for limits and restart behavior.
+- [Installation](docs/INSTALL.md) — prerequisites, v1/v2 deployment, certificate generation,
+  gateway restart, rollback.
+- [Configuration](docs/CONFIGURATION.md) — every key for both plugins, defaults, and validation
+  rules.
+- [Architecture](docs/ARCHITECTURE.md) — data flow, the liveness state machine, the mTLS server,
+  idempotency and the receipt journal.
+- [Security](docs/SECURITY.md) — threat model, the trusted-peer boundary, approval gating,
+  redaction.
+- [Testing](docs/TESTING.md) — the suite, coverage, and the CI matrix.
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — the truststore pitfalls, reject-RST races, restart
+  behaviour.
+- [Examples](examples/) — a full worked config plus `AGENTS.md` / `SOUL.md` / `USER.md`.
+
+The authoritative behaviour contract is [`SPEC.md`](SPEC.md).
+
+---
 
 ## License
 
-MIT. Targets A2A v1.0 (`PROTOCOL_VERSION = "1.0"`).
+MIT. Targets A2A protocol `1.0` (`PROTOCOL_VERSION = "1.0"`).
